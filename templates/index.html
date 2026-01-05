@@ -1311,7 +1311,11 @@
                 pollingInterval = null;
             }
             resetButtons();
-            document.getElementById('pollInfo').textContent = '';
+            const pollInfo = document.getElementById('pollInfo');
+            if (pollInfo) {
+                pollInfo.textContent = '';
+}
+
         }
         
         // 手动刷新功能
