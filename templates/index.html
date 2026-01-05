@@ -1087,23 +1087,33 @@
         }
         
         // 渲染任务的完整输出到聊天容器
+        // 使用与历史查询相同的逻辑,确保可靠性
         function renderTaskOutput(output, isError = false) {
-            console.log('渲染完整输出, 消息数:', output.length);
+            console.log('=== 开始 renderTaskOutput (使用历史查询逻辑) ===');
+            console.log('消息数:', output ? output.length : 0);
+            console.log('isError:', isError);
             
             const container = document.getElementById('chatContainer');
+            if (!container) {
+                console.error('❌ chatContainer 不存在!');
+                return;
+            }
             
             if (isError) {
+                console.log('任务出错,显示错误消息');
                 addMessage('assistant', '❌ 任务执行出错');
                 return;
             }
             
-            if (output.length === 0) {
-                console.warn('输出为空');
-                addMessage('assistant', '任务已完成,但没有返回内容');
+            if (!output || output.length === 0) {
+                console.warn('⚠️ 输出为空');
+                addMessage('assistant', '✅ 任务已完成');
                 return;
             }
             
-            // 遍历所有输出消息
+            let messageCount = 0;
+            
+            // 使用与 loadTaskHistory 完全相同的逻辑
             for (const item of output) {
                 const role = item.role;
                 const content = item.content || [];
@@ -1112,29 +1122,49 @@
                 
                 // 跳过用户消息(因为已经显示过了)
                 if (role === 'user') {
+                    console.log('  跳过用户消息');
                     continue;
                 }
                 
-                // 处理助手消息
-                if (role === 'assistant') {
-                    for (const c of content) {
-                        // 文本内容
-                        if (c.text) {
-                            console.log('添加文本消息:', c.text.substring(0, 100));
-                            addMessage('assistant', c.text);
-                        }
-                        
-                        // 附件
-                        if (c.fileUrl && c.fileName) {
-                            console.log('添加附件消息:', c.fileName);
-                            addMessage('assistant', `📎 附件: ${c.fileName}\n🔗 ${c.fileUrl}`);
-                        }
+                // 遍历 content 数组
+                for (const c of content) {
+                    // 文本内容 - 使用历史查询的判断逻辑
+                    if (c.type === 'output_text' && c.text) {
+                        console.log('  ✅ 添加文本消息:', c.text.substring(0, 50) + '...');
+                        addMessage('assistant', c.text);
+                        messageCount++;
+                    }
+                    // 如果没有 type 字段,但有 text,也尝试添加
+                    else if (!c.type && c.text) {
+                        console.log('  ✅ 添加文本消息(无type):', c.text.substring(0, 50) + '...');
+                        addMessage('assistant', c.text);
+                        messageCount++;
+                    }
+                    
+                    // 附件
+                    if (c.fileUrl) {
+                        const fileName = c.fileName || '下载文件';
+                        console.log('  ✅ 添加附件消息:', fileName);
+                        addMessage('assistant', `📎 附件: ${fileName}\n🔗 ${c.fileUrl}`);
+                        messageCount++;
                     }
                 }
             }
             
+            console.log(`✅ 共添加了 ${messageCount} 条消息`);
+            
+            if (messageCount === 0) {
+                console.warn('⚠️ 没有添加任何消息,显示完成提示');
+                addMessage('assistant', '✅ 任务已完成');
+            }
+            
             // 滚动到底部
-            container.scrollTop = container.scrollHeight;
+            setTimeout(() => {
+                container.scrollTop = container.scrollHeight;
+                console.log('✅ 滚动到底部');
+            }, 100);
+            
+            console.log('=== renderTaskOutput 结束 ===');
         }
 
         // 开始轮询（无超时限制）
@@ -1179,18 +1209,32 @@
                     
                     // 检查是否完成
                     if (status === 'completed' || status === 'error') {
-                        console.log('任务结束,直接渲染完整历史');
+                        console.log('✅ 任务结束,准备渲染完整历史');
+                        console.log('任务数据:', JSON.stringify(data, null, 2));
+                        
                         stopPolling();
                         removeSystemMessages();
                         
                         // 移除流式消息元素
                         if (streamingMessageEl) {
+                            console.log('移除流式消息元素');
                             streamingMessageEl.remove();
                             streamingMessageEl = null;
                         }
                         
-                        // 直接渲染完整的对话历史
-                        renderTaskOutput(data.output || [], status === 'error');
+                        // 确保有输出数据
+                        const output = data.output || [];
+                        console.log('输出数据长度:', output.length);
+                        
+                        if (output.length === 0) {
+                            console.warn('⚠️ 输出为空,但任务已完成');
+                            addMessage('assistant', '✅ 任务已完成');
+                        } else {
+                            // 直接渲染完整的对话历史
+                            console.log('开始渲染输出...');
+                            renderTaskOutput(output, status === 'error');
+                            console.log('✅ 渲染完成');
+                        }
                     } else {
                         // 任务还在进行中,更新流式显示
                         const output = data.output || [];
