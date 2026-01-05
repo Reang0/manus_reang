@@ -1012,7 +1012,7 @@
                 
             } catch (error) {
                 removeSystemMessages();
-                addMessage('assistant', `❌ 请求失败: ${error.message}`);
+                addMessage('assistant', `❌ 请求失败: ${error.message}(可能是当前账号积分已用完)`);
                 resetButtons();
             }
         }
