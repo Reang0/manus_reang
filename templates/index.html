@@ -692,6 +692,9 @@
                         <button class="btn btn-primary" onclick="sendMessage()" id="sendBtn">
                             📤 发送消息
                         </button>
+                        <button class="btn btn-success" onclick="manualRefresh()" id="refreshBtn" style="display: none;">
+                            🔄 刷新结果
+                        </button>
                         <button class="btn btn-secondary" onclick="clearChat()">🗑️ 清空对话</button>
                         <button class="btn btn-warning" onclick="stopPolling()" id="stopBtn" style="display: none;">
                             ⏹️ 停止轮询
@@ -944,12 +947,14 @@
             addMessage('user', message);
             document.getElementById('messageInput').value = '';
             
-            // 禁用发送按钮，显示停止按钮
+            // 禁用发送按钮，显示停止按钮和刷新按钮
             const sendBtn = document.getElementById('sendBtn');
             const stopBtn = document.getElementById('stopBtn');
+            const refreshBtn = document.getElementById('refreshBtn');
             sendBtn.disabled = true;
             sendBtn.innerHTML = '<span class="loading"></span> 发送中...';
             stopBtn.style.display = 'inline-block';
+            refreshBtn.style.display = 'inline-block';
             
             // 立即添加临时反馈消息
             addSystemMessage('⏳ 正在发送请求到 Manus API...');
@@ -1167,8 +1172,11 @@
             console.log('=== renderTaskOutput 结束 ===');
         }
 
-        // 开始轮询（无超时限制）
+        // 基于历史查询的自动刷新机制
         function startPolling(taskId) {
+            const log = window.debugLog || console.log;
+            log('🔄 开始自动刷新, Task ID: ' + taskId);
+            
             if (pollingInterval) {
                 clearInterval(pollingInterval);
             }
@@ -1176,90 +1184,123 @@
             isPolling = true;
             const apiKey = getApiKey();
             let pollCount = 0;
+            let lastMessageCount = 0;  // 记录上次的消息数量
             const interval = parseInt(document.getElementById('pollInterval').value) * 1000 || 3000;
             
-            // 立即执行一次
-            pollTask();
-            
-            // 设置定时轮询
-            pollingInterval = setInterval(pollTask, interval);
-            
-            async function pollTask() {
+            // 定义刷新函数
+            const refreshTaskHistory = async () => {
                 if (!isPolling) {
+                    log('⏹️ 停止刷新');
                     clearInterval(pollingInterval);
                     return;
                 }
                 
                 pollCount++;
+                log('🔄 第 ' + pollCount + ' 次刷新...');
                 updatePollInfo(pollCount);
                 
                 try {
+                    // 使用获取任务详情接口
                     const response = await fetch(`/api/get-task/${taskId}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ api_key: apiKey })
+                        body: JSON.stringify({ 
+                            api_key: apiKey
+                        })
                     });
                     
+                    if (!response.ok) {
+                        log('❌ 刷新失败: ' + response.status);
+                        return;
+                    }
+                    
                     const data = await response.json();
+                    
+                    if (data.error) {
+                        log('❌ API 错误: ' + data.error);
+                        return;
+                    }
+                    
                     const status = data.status;
+                    const output = data.output || [];
                     
-                    console.log('轮询响应:', { status, taskId, outputLength: data.output?.length });
-                    
+                    log('📊 任务状态: ' + status + ' | 消息数: ' + output.length);
                     updateTaskStatus(status, pollCount);
                     
-                    // 检查是否完成
-                    if (status === 'completed' || status === 'error') {
-                        console.log('✅ 任务结束,准备渲染完整历史');
-                        console.log('任务数据:', JSON.stringify(data, null, 2));
+                    // 检测是否有新消息
+                    const assistantMessages = output.filter(item => item.role === 'assistant');
+                    const currentMessageCount = assistantMessages.length;
+                    
+                    log('💬 助手消息数: ' + currentMessageCount + ' | 上次: ' + lastMessageCount);
+                    
+                    // 如果有新消息,更新显示
+                    if (currentMessageCount > lastMessageCount) {
+                        log('✨ 检测到新消息!');
                         
-                        stopPolling();
-                        removeSystemMessages();
-                        
-                        // 移除流式消息元素
+                        // 移除流式消息
                         if (streamingMessageEl) {
-                            console.log('移除流式消息元素');
                             streamingMessageEl.remove();
                             streamingMessageEl = null;
                         }
                         
-                        // 确保有输出数据
-                        const output = data.output || [];
-                        console.log('输出数据长度:', output.length);
-                        
-                        if (output.length === 0) {
-                            console.warn('⚠️ 输出为空,但任务已完成');
-                            addMessage('assistant', '✅ 任务已完成');
-                        } else {
-                            // 直接渲染完整的对话历史
-                            console.log('开始渲染输出...');
-                            renderTaskOutput(output, status === 'error');
-                            console.log('✅ 渲染完成');
-                        }
-                    } else {
-                        // 任务还在进行中,更新流式显示
-                        const output = data.output || [];
-                        if (output.length > 0) {
-                            // 查找最新的助手回复
-                            for (let i = output.length - 1; i >= 0; i--) {
-                                if (output[i].role === 'assistant') {
-                                    const content = output[i].content || [];
-                                    for (const c of content) {
-                                        if (c.text) {
-                                            updateStreamingMessage(c.text, false);
-                                            break;
-                                        }
-                                    }
-                                    break;
+                        // 只添加新的消息
+                        for (let i = lastMessageCount; i < currentMessageCount; i++) {
+                            const item = assistantMessages[i];
+                            const content = item.content || [];
+                            
+                            for (const c of content) {
+                                if (c.type === 'output_text' && c.text) {
+                                    log('➕ 添加新消息: ' + c.text.substring(0, 30) + '...');
+                                    addMessage('assistant', c.text);
+                                }
+                                
+                                if (c.fileUrl) {
+                                    const fileName = c.fileName || '下载文件';
+                                    addMessage('assistant', `📎 附件: ${fileName}\n🔗 ${c.fileUrl}`);
                                 }
                             }
                         }
+                        
+                        lastMessageCount = currentMessageCount;
+                    }
+                    
+                    // 检查任务是否完成
+                    if (status === 'completed' || status === 'failed' || status === 'error') {
+                        log('✅ 任务已完成, 状态: ' + status);
+                        stopPolling();
+                        removeSystemMessages();
+                        
+                        // 移除流式消息
+                        if (streamingMessageEl) {
+                            streamingMessageEl.remove();
+                            streamingMessageEl = null;
+                        }
+                        
+                        // 如果还没有显示任何消息,显示完成提示
+                        if (currentMessageCount === 0) {
+                            addMessage('assistant', '✅ 任务已完成');
+                        }
+                        
+                        resetButtons();
                     }
                     
                 } catch (error) {
-                    console.error('轮询错误:', error);
-                    updatePollInfo(pollCount, '连接错误，重试中...');
+                    log('❌ 刷新出错: ' + error);
                 }
-            }
+            };
+            
+            // 立即执行一次
+            log('⚡ 立即执行第一次刷新...');
+            refreshTaskHistory().catch(err => log('❌ 首次刷新失败: ' + err));
+            
+            // 设置定时刷新
+            log('⏰ 设置定时刷新,间隔 ' + interval + 'ms');
+            pollingInterval = setInterval(() => {
+                log('⏰ 定时器触发');
+                refreshTaskHistory().catch(err => log('❌ 定时刷新失败: ' + err));
+            }, interval);
+            
+            log('✅ startPolling 完成, 定时器ID: ' + pollingInterval);
         }
         
         // 停止轮询
@@ -1273,25 +1314,132 @@
             document.getElementById('pollInfo').textContent = '';
         }
         
+        // 手动刷新功能
+        async function manualRefresh() {
+            console.log('🔄 手动刷新...');
+            
+            const taskId = currentTaskId || document.getElementById('taskId').value.trim();
+            const apiKey = getApiKey();
+            
+            if (!taskId) {
+                alert('请先发送消息或输入任务 ID');
+                return;
+            }
+            
+            if (!apiKey) {
+                alert('请先配置 API Key');
+                return;
+            }
+            
+            const refreshBtn = document.getElementById('refreshBtn');
+            const originalText = refreshBtn.innerHTML;
+            refreshBtn.disabled = true;
+            refreshBtn.innerHTML = '<span class="loading"></span> 刷新中...';
+            
+            try {
+                const response = await fetch(`/api/get-task/${taskId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        api_key: apiKey
+                    })
+                });
+                
+                if (!response.ok) {
+                    alert('刷新失败: ' + response.status);
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert('API 错误: ' + data.error);
+                    return;
+                }
+                
+                console.log('📊 任务状态:', data.status);
+                console.log('💬 消息数:', data.output?.length);
+                
+                // 清空当前对话中的助手消息
+                const container = document.getElementById('chatContainer');
+                const assistantMessages = container.querySelectorAll('.message.assistant');
+                assistantMessages.forEach(msg => msg.remove());
+                
+                // 移除流式消息
+                if (streamingMessageEl) {
+                    streamingMessageEl.remove();
+                    streamingMessageEl = null;
+                }
+                
+                // 移除系统消息
+                removeSystemMessages();
+                
+                // 添加所有助手消息
+                const output = data.output || [];
+                let messageCount = 0;
+                
+                for (const item of output) {
+                    if (item.role === 'assistant') {
+                        const content = item.content || [];
+                        
+                        for (const c of content) {
+                            if (c.type === 'output_text' && c.text) {
+                                addMessage('assistant', c.text);
+                                messageCount++;
+                            }
+                            
+                            if (c.fileUrl) {
+                                const fileName = c.fileName || '下载文件';
+                                addMessage('assistant', `📎 附件: ${fileName}\n🔗 ${c.fileUrl}`);
+                                messageCount++;
+                            }
+                        }
+                    }
+                }
+                
+                console.log(`✅ 刷新完成, 添加了 ${messageCount} 条消息`);
+                
+                if (messageCount === 0) {
+                    addMessage('assistant', '✅ 任务已完成，但暂无回复内容');
+                }
+                
+                // 更新任务状态
+                updateTaskStatus(data.status);
+                
+            } catch (error) {
+                console.error('❌ 刷新出错:', error);
+                alert('刷新失败: ' + error.message);
+            } finally {
+                refreshBtn.disabled = false;
+                refreshBtn.innerHTML = originalText;
+            }
+        }
+        
         // 更新轮询信息
         function updatePollInfo(count, extra = '') {
             const pollInfo = document.getElementById('pollInfo');
-            const interval = document.getElementById('pollInterval').value;
-            pollInfo.textContent = `轮询 #${count} | 间隔 ${interval}s ${extra}`;
+            if (pollInfo) {
+                const interval = document.getElementById('pollInterval').value;
+                pollInfo.textContent = `轮询 #${count} | 间隔 ${interval}s ${extra}`;
+            }
         }
         
         // 重置按钮状态
         function resetButtons() {
             const sendBtn = document.getElementById('sendBtn');
             const stopBtn = document.getElementById('stopBtn');
+            const refreshBtn = document.getElementById('refreshBtn');
             sendBtn.disabled = false;
             sendBtn.innerHTML = '📤 发送消息';
             stopBtn.style.display = 'none';
+            refreshBtn.style.display = 'none';
         }
         
         // 更新任务状态显示
         function updateTaskStatus(status, count = 0) {
             const statusEl = document.getElementById('taskStatus');
+            if (!statusEl) return;
+            
             let html = '';
             
             switch (status) {
